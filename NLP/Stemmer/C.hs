@@ -1,4 +1,4 @@
-{-# OPTIONS  -XEmptyDataDecls #-}
+{-# LANGUAGE EmptyDataDecls           #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 
 -- | Haskell bindings for the Snowball stemming library.
@@ -10,10 +10,21 @@ module NLP.Stemmer.C (
       Stemmer(..)
     -- * Low level functions
     , stem
+    , stemText
+    , stemByteString
     ) where
 
-import Data.Char        (toLower)
-import Foreign.C        (CString(..), CInt(..), peekCStringLen, newCString)
+import Control.Exception (bracket)
+
+import Data.ByteString (ByteString)
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Unsafe as BS
+import qualified Data.ByteString.Char8 as BC
+
+import Data.Text (Text)
+import qualified Data.Text.Encoding as T
+
+import Foreign.C        (CString(..), CStringLen(..), CInt(..), peekCStringLen, withCStringLen)
 import Foreign.Ptr      (Ptr)
 
 data StemmerStruct
@@ -46,18 +57,46 @@ foreign import ccall "libstemmer.h sb_stemmer_stem"    sb_stemmer_stem   :: Stem
 foreign import ccall "libstemmer.h sb_stemmer_length"  sb_stemmer_length :: StemmerP -> IO CInt
 
 -- | Stem a word
-stem :: Stemmer -> String -> IO String
-stem algorithm word = do
-    algorithm' <- stemmerCString algorithm
-    encoding   <- newCString "UTF_8"
-    stemmer    <- sb_stemmer_new algorithm' encoding
-    word'      <- newCString word
-    strPtr     <- sb_stemmer_stem   stemmer word' (fromIntegral $ length word)
-    strLen     <- sb_stemmer_length stemmer
-    result     <- peekCStringLen (strPtr, fromIntegral strLen)
-    sb_stemmer_delete stemmer
-    return result
+stemPtr :: Stemmer -> CStringLen -> (CStringLen -> IO a) -> IO a
+stemPtr algorithm (word, len) io = BS.unsafeUseAsCString (stemmerString algorithm) 
+    $ \ algorithm' -> BS.unsafeUseAsCString utf8 
+    $ \ encoding -> bracket (sb_stemmer_new algorithm' encoding) sb_stemmer_delete
+    $ \ stemmer -> do
+        strPtr <- sb_stemmer_stem stemmer word (fromIntegral len)
+        strLen <- sb_stemmer_length stemmer
+        io (strPtr, fromIntegral strLen)
 
-stemmerCString :: Stemmer -> IO CString
-stemmerCString = newCString . firstLower . show
-    where firstLower (first:rest) = (toLower first) : rest 
+stem :: Stemmer -> String -> IO String
+stem algorithm word = withCStringLen word
+    $ \ cWord -> stemPtr algorithm cWord peekCStringLen
+
+stemText :: Stemmer -> Text -> IO Text
+stemText algorithm word = do
+    bs <- stemByteString algorithm $ T.encodeUtf8 word
+    pure $ T.decodeUtf8 bs
+
+stemByteString :: Stemmer -> ByteString -> IO ByteString
+stemByteString algorithm word = BS.unsafeUseAsCString word
+    $ \ cWord -> stemPtr algorithm (cWord, BS.length word) BS.packCStringLen
+
+utf8 :: ByteString
+utf8 = BC.pack "UTF_8"
+
+stemmerString :: Stemmer -> ByteString
+stemmerString s = case s of
+    Danish     -> BC.pack "danish"
+    Dutch      -> BC.pack "dutch"
+    English    -> BC.pack "english"
+    Finnish    -> BC.pack "finnish"
+    French     -> BC.pack "french"
+    German     -> BC.pack "german"
+    Hungarian  -> BC.pack "hungarian"
+    Italian    -> BC.pack "italian"
+    Norwegian  -> BC.pack "norwegian"
+    Portuguese -> BC.pack "portuguese"
+    Romanian   -> BC.pack "romanian"
+    Russian    -> BC.pack "russian"
+    Spanish    -> BC.pack "spanish"
+    Swedish    -> BC.pack "swedish"
+    Turkish    -> BC.pack "turkish"
+    Porter     -> BC.pack "porter"
